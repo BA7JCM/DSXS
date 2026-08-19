@@ -12,7 +12,7 @@ Sample runs
 
 ```
 $ python3 dsxs.py -h
-Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.3a
+Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.4a
  by: Miroslav Stampar (@stamparm)
 
 Usage: dsxs.py [options]
@@ -31,7 +31,7 @@ Options:
 ```
 $ python3 dsxs.py -u "http://testphp.vulnweb.com/search.php?test=query" --data="s
 earchFor=foobar"
-Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.3a
+Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.4a
  by: Miroslav Stampar (@stamparm)
 
 * scanning GET parameter 'test'
@@ -45,7 +45,7 @@ scan results: possible vulnerabilities found
 ```
 $ python3 dsxs.py -u "http://public-firing-range.appspot.com/address/location.has
 h/replace"
-Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.3a
+Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.4a
  by: Miroslav Stampar (@stamparm)
 
  (i) page itself appears to be XSS vulnerable (DOM)
@@ -58,7 +58,25 @@ Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code) #v0.3a
 scan results: possible vulnerabilities found
 ```
 
+Tests
+----
+
+The `tests/` directory holds a regression suite that runs the real CLI against
+deterministic localhost fixtures - no third party target is ever contacted:
+
+```
+$ python3 -m unittest discover -s tests
+```
+
+Besides one fixture per supported context (and per non-vulnerable counterpart),
+the suite contains a **ground truth oracle**: if a Chromium/Chrome binary is
+available, every fixture is additionally attacked with real breakout payloads
+inside a headless browser, and DSXS' verdict is required to match whatever the
+browser actually executed.
+
 Requirements
 ----
 
 [Python](http://www.python.org/download/) version **3.x** is required for running this program.
+Running the test suite additionally needs `openssl` (for the throwaway TLS certificate) and,
+for the browser oracle, an installed Chromium/Chrome (skipped automatically when missing).
