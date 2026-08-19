@@ -1,0 +1,57 @@
+name: tests
+
+# The suite is hermetic: every target is a localhost fixture, so nothing here
+# ever touches a third party host. It does need a headless browser, because
+# part of the suite cross-checks every verdict against a real one.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"                     # weekly: the oracle asserts real browser behaviour, which drifts
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    env:
+      # Every oracle probe is a whole browser process, so memory rather than CPU
+      # is the binding constraint; two at a time keeps plenty of headroom.
+      DSXS_ORACLE_JOBS: 2
+
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Report the environment
+        run: |
+          python -VV
+          openssl version
+
+      - name: Require a headless browser
+        # Without one the oracle tests skip themselves, which would quietly
+        # turn the build green while dropping most of the suite's coverage.
+        run: >-
+          python -c "import sys; sys.path.insert(0, 'tests'); import browser;
+          print(browser.version());
+          sys.exit(0 if browser.available() else 'refusing to run with the browser oracle disabled')"
+
+      - name: Run the regression suite
+        run: python -m unittest discover -s tests -v

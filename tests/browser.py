@@ -56,6 +56,15 @@ def available():
     return _BINARY is not None
 
 
+def version():
+    """Path and version of the browser backing the oracle (for CI logs)."""
+
+    if not available():
+        return "no Chromium/Chrome binary found"
+    reported = subprocess.run([_BINARY, "--version"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    return "%s (%s)" % (_BINARY, reported.stdout.decode("utf-8", "replace").strip())
+
+
 def _profile():
     if not getattr(_local, "profile", None):
         _local.profile = tempfile.mkdtemp(prefix="dsxs-oracle-", dir=_PROFILE_ROOT)
@@ -74,6 +83,7 @@ def render(url, timeout=60, attempts=3):
         try:
             process = subprocess.run([_BINARY, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                                       "--disable-extensions", "--disable-background-networking", "--no-default-browser-check",
+                                      "--disable-dev-shm-usage",
                                       "--user-data-dir=%s" % _profile(), "--virtual-time-budget=2000", "--dump-dom", url],
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
             dom = process.stdout.decode("utf-8", "replace")

@@ -455,6 +455,12 @@ DOM_EXPLOITABLE = {"dom_hash": "#%s", "dom_innerhtml": "#%s", "dom_eval": "#%s",
 
 DOM_SAFE = {"dom_encoded": "#%s", "dom_textcontent": "#%s", "dom_string_literal": "#%s", "dom_escaped": "#%s"}
 
+DOM_MODES = dict(DOM_EXPLOITABLE, **DOM_SAFE)                            # mode -> URL suffix carrying the payload
+
+# Each oracle probe is a whole browser process, so memory - not CPU - is the
+# limit on constrained runners. Override with DSXS_ORACLE_JOBS.
+ORACLE_JOBS = max(1, int(os.environ.get("DSXS_ORACLE_JOBS") or min(4, os.cpu_count() or 1)))
+
 SCAN_PATH = {"truncated": "/truncated?q=" + "a" * 48}
 
 
@@ -466,10 +472,10 @@ class TestBrowserOracle(Base):
     def setUpClass(cls):
         super().setUpClass()
         modes = EXPLOITABLE + SAFE
-        dom = sorted(DOM_EXPLOITABLE | DOM_SAFE)
-        with concurrent.futures.ThreadPoolExecutor(4) as pool:
+        dom = sorted(DOM_MODES)
+        with concurrent.futures.ThreadPoolExecutor(ORACLE_JOBS) as pool:
             payloads = pool.map(lambda _: browser.exploitable("%s/%s?q=%%s" % (cls.server.url, _)), modes)
-            dom_payloads = pool.map(lambda _: browser.dom_exploitable("%s/%s" % (cls.server.url, _) + (DOM_EXPLOITABLE | DOM_SAFE)[_]), dom)
+            dom_payloads = pool.map(lambda _: browser.dom_exploitable("%s/%s" % (cls.server.url, _) + DOM_MODES[_]), dom)
             cls.verdicts = dict(zip(modes, payloads))
             cls.dom_verdicts = dict(zip(dom, dom_payloads))
 
@@ -500,7 +506,7 @@ class TestBrowserOracle(Base):
                 self.assertIsNone(self.dom_verdicts[mode], "DOM fixture %r is exploitable after all (via %r)" % (mode, self.dom_verdicts[mode]))
 
     def test_dom_verdicts_match_the_browser(self):
-        for mode in sorted(DOM_EXPLOITABLE | DOM_SAFE):
+        for mode in sorted(DOM_MODES):
             with self.subTest(mode=mode):
                 reported = "(DOM)" in self.scan("/%s" % mode)
                 self.assertEqual(self.dom_verdicts[mode] is not None, reported,

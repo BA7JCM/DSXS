@@ -1,4 +1,4 @@
-Damn Small XSS Scanner [![Python 3.x](https://img.shields.io/badge/python-3.x-yellow.svg)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Public_domain-red.svg)](https://wiki.creativecommons.org/wiki/Public_domain)
+Damn Small XSS Scanner [![Tests](https://github.com/stamparm/DSXS/actions/workflows/tests.yml/badge.svg)](https://github.com/stamparm/DSXS/actions/workflows/tests.yml) [![Python 3.x](https://img.shields.io/badge/python-3.x-yellow.svg)](https://www.python.org/) [![License](https://img.shields.io/badge/license-Public_domain-red.svg)](https://wiki.creativecommons.org/wiki/Public_domain)
 =========
 
 **Damn Small XSS Scanner** (DSXS) is a fully functional [Cross-site scripting](https://en.wikipedia.org/wiki/Cross-site_scripting) vulnerability scanner (supporting GET and POST parameters) written in under 100 lines of code.
@@ -67,6 +67,10 @@ deterministic localhost fixtures - no third party target is ever contacted:
 ```
 $ python3 -m unittest discover -s tests
 ```
+
+Set `DSXS_ORACLE_JOBS` to cap how many browsers the oracle runs at once (it
+defaults to the CPU count, up to four); each one is a full browser process, so
+memory is usually the binding constraint.
 
 Besides one fixture per supported context (and per non-vulnerable counterpart),
 the suite contains a **ground truth oracle**: if a Chromium/Chrome binary is
