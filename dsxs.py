@@ -4,25 +4,28 @@ import optparse, random, re, ssl, string, urllib, urllib.parse, urllib.request  
 NAME, VERSION, AUTHOR, LICENSE = "Damn Small XSS Scanner (DSXS) < 100 LoC (Lines of Code)", "0.4a", "Miroslav Stampar (@stamparm)", "Public domain (FREE)"
 
 SMALLER_CHAR_POOL    = ('<', '>')                                                           # characters used for XSS tampering of parameter values (smaller set - for avoiding possible SQLi errors)
-LARGER_CHAR_POOL     = ('\'', '"', '>', '<', ';', '`')                                      # characters used for XSS tampering of parameter values (larger set)
+LARGER_CHAR_POOL     = ('\'', '"', '>', '<', ';', '`', '/')                                 # characters used for XSS tampering of parameter values (larger set)
 GET, POST            = "GET", "POST"                                                        # enumerator-like values used for marking current phase
 PREFIX_SUFFIX_LENGTH, MAX_REFLECTION_LENGTH, MAX_SNIPPET_LENGTH = 5, 100, 512               # length of random prefix/suffix, maximum length of a reflected payload and of a printed evidence snippet
 COOKIE, UA, REFERER = "Cookie", "User-Agent", "Referer"                                     # optional HTTP header names
 TIMEOUT, URL_SAFE = 30, "%/:?&=#+;@$,!*'()[]"                                               # connection timeout in seconds and URL characters kept as-is
-DOM_FILTER_REGEX = r"(?s)<!--.*?-->|\bescape\([^)]+\)|\([^)]+==[^(]+\)|\"[^\"]+\"|'[^']+'"  # filtering regex used before DOM XSS search
+DOM_FILTER_REGEX = r"(?s)<!--.*?-->|\b(?:escape|encodeURIComponent|encodeURI)\([^)]+\)|\([^)]+==[^(]+\)|\"[^\"]+\"|'[^']+'"  # filtering regex used before DOM XSS search
 
 REGULAR_PATTERNS = (                                                                        # each (regular pattern) item consists of (r"context regex", (prerequisite unfiltered characters), "info text", r"content removal regex")
     (r"\A[^<>]*%(chars)s[^<>]*\Z", ('<', '>'), "\".xss.\", pure text response, %(filtering)s filtering", r"\\"),
     (r"<!--[^>]*%(chars)s|%(chars)s[^<]*-->", ('<', '>'), "\"<!--.'.xss.'.-->\", inside the comment, %(filtering)s filtering", r"\\[<>]"),
-    (r"(?s)<script[^>]*>[^<]*?'[^<']*%(chars)s|%(chars)s[^<']*'[^<]*</script>", ('\'', ';'), "\"<script>.'.xss.'.</script>\", enclosed by <script> tags, inside single-quotes, %(filtering)s filtering", r"\\'|{[^\n]+}"),
-    (r'(?s)<script[^>]*>[^<]*?"[^<"]*%(chars)s|%(chars)s[^<"]*"[^<]*</script>', ('"', ';'), "'<script>.\".xss.\".</script>', enclosed by <script> tags, inside double-quotes, %(filtering)s filtering", r'\\"|{[^\n]+}'),
-    (r"(?s)<script[^>]*>[^<]*?`[^<`]*%(chars)s|%(chars)s[^<`]*`[^<]*</script>", ('`', ';'), "\"<script>.`.xss.`.</script>\", enclosed by <script> tags, inside back-ticks, %(filtering)s filtering", r"\\`|{[^\n]+}"),
+    (r"(?s)<script[^>]*>[^<]*?'[^<']*%(chars)s|%(chars)s[^<']*'[^<]*</script>", ('\'',), "\"<script>.'.xss.'.</script>\", enclosed by <script> tags, inside single-quotes, %(filtering)s filtering", r"\\'|{[^\n]+}"),
+    (r'(?s)<script[^>]*>[^<]*?"[^<"]*%(chars)s|%(chars)s[^<"]*"[^<]*</script>', ('"',), "'<script>.\".xss.\".</script>', enclosed by <script> tags, inside double-quotes, %(filtering)s filtering", r'\\"|{[^\n]+}'),
+    (r"(?s)<script[^>]*>[^<]*?`[^<`]*%(chars)s|%(chars)s[^<`]*`[^<]*</script>", ('`',), "\"<script>.`.xss.`.</script>\", enclosed by <script> tags, inside back-ticks, %(filtering)s filtering", r"\\`|{[^\n]+}"),
     (r"(?s)<script[^>]*>[^<]*?%(chars)s|%(chars)s[^<]*</script>", (';',), "\"<script>.xss.</script>\", enclosed by <script> tags, %(filtering)s filtering", r"&(#\d+|[a-z]+);|'[^'\s]+'|\"[^\"\s]+\"|`[^`\n]*`|{[^\n]+}"),
-    (r"(?s)<script[^>]*>[^<]*?%(chars)s|%(chars)s[^<]*</script>", ('<', '>'), "\"<script>.xss.</script>\", enclosed by <script> tags, reaching the closing tag, %(filtering)s filtering", r"\\[<>]"),
-    (r">[^<]*%(chars)s[^<]*(<|\Z)", ('<', '>'), "\">.xss.<\", outside of tags, %(filtering)s filtering", r"(?s)<script.+?</script>|<!--.*?-->|\\"),
+    (r"(?s)<script[^>]*>[^<]*?%(chars)s|%(chars)s[^<]*</script>", ('<', '/'), "\"<script>.xss.</script>\", enclosed by <script> tags, reaching the closing tag, %(filtering)s filtering", r"\\[<>]"),
+    (r"(?s)<(textarea|title|style)[^>]*>[^<]*?%(chars)s|%(chars)s[^<]*</(textarea|title|style)>", ('<', '/'), "\"<textarea>.xss.</textarea>\", inside a raw text element, %(filtering)s filtering", r"\\[<>]"),
+    (r">[^<]*%(chars)s[^<]*(<|\Z)", ('<',), "\">.xss.<\", outside of tags, %(filtering)s filtering", r"(?s)<script.+?</script>|<!--.*?-->|<(?:textarea|title|style)[^>]*>.*?</(?:textarea|title|style)>|\\"),
     (r"<[^>]*=\s*'[^>']*%(chars)s[^>']*'[^>]*>", ('\'',), "\"<.'.xss.'.>\", inside the tag, inside single-quotes, %(filtering)s filtering", r"(?s)<script.+?</script>|<!--.*?-->|\\"),
     (r'<[^>]*=\s*"[^>"]*%(chars)s[^>"]*"[^>]*>', ('"',), "'<.\".xss.\".>', inside the tag, inside double-quotes, %(filtering)s filtering", r"(?s)<script.+?</script>|<!--.*?-->|\\"),
     (r"<[^>]*%(chars)s[^>]*>", (), "\"<.xss.>\", inside the tag, outside of quotes, %(filtering)s filtering", r"(?s)<script.+?</script>|<!--.*?-->|=\s*'[^']*'|=\s*\"[^\"]*\""),
+    (r"<[^>]*\s(href|src|action|formaction)\s*=\s*['\"]?%(chars)s", (), "\"<.href=.xss.>\", start of an URL attribute value (e.g. \"javascript:\")", r"(?s)<!--.*?-->"),
+    (r"<[^>]*\son\w+\s*=\s*(['\"])[^'\"`]*%(chars)s", (), "\"<.onX=.xss.>\", JavaScript code position inside an event handler", r"(?s)<!--.*?-->"),
 )
 
 DOM_PATTERNS = (                                                                            # each (dom pattern) item consists of r"recognition regex"
@@ -58,8 +61,8 @@ def scan_page(url, data=None):
                 prefix, suffix = ("".join(random.sample(string.ascii_lowercase, PREFIX_SUFFIX_LENGTH)) for i in range(2))
                 for pool, append in ((LARGER_CHAR_POOL, True), (SMALLER_CHAR_POOL, True), (LARGER_CHAR_POOL, False)):
                     if not found:
-                        tampered = "%s%s%s" % (current[:match.end() if append else match.start("value")], urllib.parse.quote("%s%s%s%s" % ("'" if pool == LARGER_CHAR_POOL else "", prefix, "".join(random.sample(pool, len(pool))), suffix)), current[match.end():])
-                        content = (_retrieve_content(tampered, data) if phase is GET else _retrieve_content(url, tampered)).replace("%s%s" % ("'" if pool == LARGER_CHAR_POOL else "", prefix), prefix)
+                        tampered = "%s%s%s" % (current[:match.end() if append else match.start("value")], urllib.parse.quote("%s%s%s%s" % ("'" if pool == LARGER_CHAR_POOL and append else "", prefix, "".join(random.sample(pool, len(pool))), suffix)), current[match.end():])
+                        content = (_retrieve_content(tampered, data) if phase is GET else _retrieve_content(url, tampered)).replace("%s%s" % ("'" if pool == LARGER_CHAR_POOL and append else "", prefix), prefix)
                         for regex, condition, info, content_removal_regex in REGULAR_PATTERNS:
                             filtered = re.sub(content_removal_regex or "", "", content)
                             for sample in re.finditer("(?s)%s(.{0,%d}?)%s" % (prefix, MAX_REFLECTION_LENGTH, suffix), filtered, re.I):

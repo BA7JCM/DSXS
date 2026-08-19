@@ -26,7 +26,7 @@ HTML = "<html><head><title>fixture</title></head><body>\n%s\n</body></html>"
 DOM_PAGE = HTML % "<script>document.write(location.href);</script>"
 
 
-def _strip(value, chars="<>'\";`"):
+def _strip(value, chars="<>'\";`/"):
     return "".join(_ for _ in value if _ not in chars)
 
 
@@ -72,9 +72,9 @@ def _render(mode, value, handler):
     elif mode == "after_hash":                                              # '#' is an ordinary character inside a POST body
         text = HTML % ("<div>%s</div>" % value.split('#', 1)[-1])
     elif mode == "dom_hash":                                                # location.hash source, bare (no "window." prefix)
-        text = HTML % "<script>var p = location.hash.substr(1);document.write(p);</script>"
+        text = HTML % "<script>var p = decodeURIComponent(location.hash.substr(1));document.write(p);</script>"
     elif mode == "dom_outer":                                               # outerHTML sink
-        text = HTML % "<script>document.body.outerHTML = location.search;</script>"
+        text = HTML % "<script>document.body.outerHTML = decodeURIComponent(location.search);</script>"
     elif mode == "dom_jquery":                                              # jQuery .html() sink fed from document.referrer
         text = HTML % "<script>var r = document.referrer;$(document.body).html(r);</script>"
     elif mode == "script_sq_esc":                                           # JS-safe quoting, but < and > pass through
@@ -97,16 +97,41 @@ def _render(mode, value, handler):
         text = HTML % ("<input type=text value=%s>" % _strip(value))
     elif mode == "textarea":
         text = HTML % ("<textarea>%s</textarea>" % value)
+    elif mode == "textarea_noslash":                                        # "/" gone: </textarea> is unreachable
+        text = HTML % ("<textarea>%s</textarea>" % value.replace('/', ''))
     elif mode == "title":
         text = "<html><head><title>%s</title></head><body>ok</body></html>" % value
     elif mode == "style":
         text = HTML % ("<style>/* %s */</style>" % value)
     elif mode == "attr_dq_entity":                                          # quotes entity encoded: < and > stay inert
         text = HTML % ('<input type=text value="%s">' % value.replace('"', "&quot;"))
+    elif mode == "dom_innerhtml":                                           # hash -> innerHTML
+        text = HTML % '<div id=x></div><script>var p = decodeURIComponent(location.hash.substr(1));document.getElementById(\'x\').innerHTML = p;</script>'
+    elif mode == "dom_textcontent":                                         # textContent is not a sink
+        text = HTML % '<div id=x></div><script>var p = decodeURIComponent(location.hash.substr(1));document.getElementById(\'x\').textContent = p;</script>'
+    elif mode == "dom_eval":
+        text = HTML % "<script>eval(location.hash.substr(1));</script>"
+    elif mode == "dom_search_write":
+        text = HTML % "<script>document.write(decodeURIComponent(location.search));</script>"
+    elif mode == "dom_encoded":                                             # sink fed through encodeURIComponent()
+        text = HTML % "<script>document.write(encodeURIComponent(location.hash));</script>"
+    elif mode == "handler_code":                                            # reflection in JS code position of a handler
+        text = HTML % ('<script>function show(v){}</script><img src=x onerror="show(%s)">' % html.escape(value))
     elif mode == "dom_string_literal":                                      # source name only inside a string literal
         text = HTML % '<script>var x = "location.href";document.write(x);</script>'
     elif mode == "dom_escaped":                                             # sink fed through escape()
         text = HTML % "<script>document.write(escape(location.href));</script>"
+    elif mode == "stripgt":                                                 # only ">" filtered: an unclosed tag still works
+        text = HTML % ("<div>%s</div>" % value.replace('>', ''))
+    elif mode == "script_sq_nosemi":                                        # angle brackets properly \u-escaped, ";" filtered,
+        escaped = value.replace('<', "\\u003c").replace('>', "\\u003e").replace(';', '')   # quote left raw: "'-payload-'" is enough
+        text = HTML % ("<script>var x = '%s';</script>" % escaped)
+    elif mode == "script_noslash":                                          # quotes escaped and "/" gone: </script> unreachable
+        text = HTML % ("<script>var x = '%s';</script>" % value.replace("'", "\\'").replace('/', ''))
+    elif mode == "data_attr":                                               # "data-src" is not an URL sink at all
+        text = HTML % ('<div data-src="%s">x</div>' % value.replace('"', "&quot;"))
+    elif mode == "url_sink":                                                # quoting is perfect, the scheme is not validated
+        text = HTML % ('<iframe src="%s"></iframe>' % value.replace('"', "&quot;"))
     elif mode == "comment":
         text = HTML % ("<!-- %s -->" % value)
     elif mode == "both":                                                    # echoes the GET and the POST value separately

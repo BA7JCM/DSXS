@@ -241,6 +241,59 @@ class TestDom(Base):
         self.assertNotIn("(DOM)", self.scan("/dom_escaped"))
 
 
+class TestCharacterRequirements(Base):
+    """The prerequisite characters of each context must be exactly what an
+    attacker really needs there - no more, no less."""
+
+    def test_closing_bracket_is_not_required_in_html_text(self):
+        """An unclosed "<svg onload=x " consumes the next ">" already present
+        in the page, so filtering ">" alone protects nothing."""
+
+        self.assertVulnerable(self.scan("/stripgt?q=1"), info="outside of tags")
+
+    def test_semicolon_is_not_required_in_a_js_string(self):
+        """"'-payload-'" breaks out of a JavaScript string without any
+        semicolon, so ";" must not be a prerequisite."""
+
+        self.assertVulnerable(self.scan("/script_sq_nosemi?q=1"), info="inside single-quotes")
+
+    def test_slash_is_required_to_close_a_script(self):
+        """Reaching "</script" is impossible without "/", so raw "<" and ">"
+        inside a script body are not enough on their own."""
+
+        self.assertNotVulnerable(self.scan("/script_noslash?q=1"))
+
+    def test_slash_is_required_to_leave_a_raw_text_element(self):
+        """Inside <textarea>/<title>/<style> only "</tag" ends the element, so
+        "<" on its own buys nothing there."""
+
+        self.assertNotVulnerable(self.scan("/textarea_noslash?q=1"))
+
+    def test_raw_text_element_is_labelled_as_such(self):
+        for mode in ("textarea", "title", "style"):
+            with self.subTest(mode=mode):
+                self.assertVulnerable(self.scan("/%s?q=1" % mode), info="raw text element")
+
+    def test_url_attribute_value_is_a_sink_on_its_own(self):
+        """Owning a whole href/src value is exploitable through "javascript:",
+        which needs none of the tampering characters at all."""
+
+        self.assertVulnerable(self.scan("/url_sink?q=1"), info="URL")
+
+    def test_event_handler_code_position(self):
+        """A reflection in JS code position of an event handler needs no special
+        character at all: "alert(1)" is alphanumerics and parentheses only, so
+        HTML escaping does not help."""
+
+        self.assertVulnerable(self.scan("/handler_code?q=1"), info="event handler")
+
+    def test_data_attribute_is_not_an_url_sink(self):
+        """"data-src" ends in "src" but is inert, so it must not be mistaken
+        for an URL attribute."""
+
+        self.assertNotVulnerable(self.scan("/data_attr?q=1"))
+
+
 class TestDetectionGaps(Base):
     def test_escaped_reflection_before_raw_one(self):
         """An earlier, harmless (escaped) reflection must not mask a later
@@ -391,9 +444,16 @@ class TestProxy(unittest.TestCase):
 
 EXPLOITABLE = ("plain", "attr_sq", "attr_dq", "attr_unq", "script", "script_sq", "script_dq", "comment",
                "script_sq_esc", "script_bt_html", "spacefilter", "stripangle", "jsescape", "escaped_then_raw",
-               "notfound", "utf16", "numeric", "truncated", "compressed", "attr_sq_jsescape", "attr_unq_bt", "attr_unq_strip", "textarea", "title", "style")
+               "notfound", "utf16", "numeric", "truncated", "compressed", "attr_sq_jsescape", "attr_unq_bt", "attr_unq_strip", "textarea", "title", "style",
+               "stripgt", "script_sq_nosemi", "url_sink", "handler_code")
 
-SAFE = ("escaped", "strip", "script_bt", "jsescape_comment", "script_jsescape", "attr_dq_entity")
+SAFE = ("escaped", "strip", "script_bt", "jsescape_comment", "script_jsescape", "attr_dq_entity",
+        "script_noslash", "textarea_noslash", "data_attr")
+
+DOM_EXPLOITABLE = {"dom_hash": "#%s", "dom_innerhtml": "#%s", "dom_eval": "#%s",
+                   "dom_search_write": "?q=%s", "dom_outer": "?q=%s"}
+
+DOM_SAFE = {"dom_encoded": "#%s", "dom_textcontent": "#%s", "dom_string_literal": "#%s", "dom_escaped": "#%s"}
 
 SCAN_PATH = {"truncated": "/truncated?q=" + "a" * 48}
 
@@ -406,9 +466,12 @@ class TestBrowserOracle(Base):
     def setUpClass(cls):
         super().setUpClass()
         modes = EXPLOITABLE + SAFE
+        dom = sorted(DOM_EXPLOITABLE | DOM_SAFE)
         with concurrent.futures.ThreadPoolExecutor(4) as pool:
             payloads = pool.map(lambda _: browser.exploitable("%s/%s?q=%%s" % (cls.server.url, _)), modes)
-        cls.verdicts = dict(zip(modes, payloads))
+            dom_payloads = pool.map(lambda _: browser.dom_exploitable("%s/%s" % (cls.server.url, _) + (DOM_EXPLOITABLE | DOM_SAFE)[_]), dom)
+            cls.verdicts = dict(zip(modes, payloads))
+            cls.dom_verdicts = dict(zip(dom, dom_payloads))
 
     def test_fixtures_behave_as_documented(self):
         """Guards the oracle itself: the fixtures must really be (in)vulnerable."""
@@ -427,6 +490,30 @@ class TestBrowserOracle(Base):
                 self.assertEqual(self.verdicts[mode] is not None, reported,
                                  "%s: browser %s, dsxs %s" % (mode, "executed %r" % self.verdicts[mode] if self.verdicts[mode] else "found nothing",
                                                               "reported" if reported else "stayed silent"))
+
+    def test_dom_fixtures_behave_as_documented(self):
+        for mode in DOM_EXPLOITABLE:
+            with self.subTest(mode=mode):
+                self.assertIsNotNone(self.dom_verdicts[mode], "DOM fixture %r turned out not to be exploitable" % mode)
+        for mode in DOM_SAFE:
+            with self.subTest(mode=mode):
+                self.assertIsNone(self.dom_verdicts[mode], "DOM fixture %r is exploitable after all (via %r)" % (mode, self.dom_verdicts[mode]))
+
+    def test_dom_verdicts_match_the_browser(self):
+        for mode in sorted(DOM_EXPLOITABLE | DOM_SAFE):
+            with self.subTest(mode=mode):
+                reported = "(DOM)" in self.scan("/%s" % mode)
+                self.assertEqual(self.dom_verdicts[mode] is not None, reported,
+                                 "%s: browser %s, dsxs %s" % (mode, "executed %r" % self.dom_verdicts[mode] if self.dom_verdicts[mode] else "found nothing",
+                                                              "reported" if reported else "stayed silent"))
+
+    def test_undecoded_url_sink_is_a_deliberate_heuristic(self):
+        """document.write(location.href) is still reported even though neither
+        Chromium nor Firefox lets markup through an undecoded URL any more - it
+        is one missing decodeURIComponent() away from being exploitable."""
+
+        self.assertIn("(DOM)", self.scan("/dom"))
+        self.assertIsNone(browser.dom_exploitable("%s/dom?q=%%s" % self.server.url))
 
     def test_text_plain_is_a_deliberate_heuristic(self):
         """A reflection in a text/plain body is reported even though a modern

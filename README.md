@@ -72,7 +72,9 @@ Besides one fixture per supported context (and per non-vulnerable counterpart),
 the suite contains a **ground truth oracle**: if a Chromium/Chrome binary is
 available, every fixture is additionally attacked with real breakout payloads
 inside a headless browser, and DSXS' verdict is required to match whatever the
-browser actually executed.
+browser actually executed. The DOM XSS sinks are validated the same way, with
+the payload delivered through the fragment or the query string exactly as a
+browser hands it to the page (i.e. percent encoded and undecoded).
 
 Requirements
 ----
