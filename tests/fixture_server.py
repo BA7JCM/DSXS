@@ -159,6 +159,9 @@ def _render(mode, value, handler):
         if not handler.headers.get("Accept-Encoding"):
             handler.extra_headers.append(("Content-Encoding", "gzip"))
             return gzip.compress(text.encode("utf-8")), ctype, status
+    elif mode == "_batch":                                                  # one same-origin iframe per payload, so a whole
+        text = HTML % "".join('<iframe width=64 height=64 src="%s"></iframe>'   # breakout set costs a single browser launch
+                              % html.escape(_, quote=True) for _ in handler.query.get("u", []))
     elif mode == "echo":                                                    # echoes request metadata, no reflection
         text = HTML % ("<pre>%s</pre>" % html.escape("\n".join("%s: %s" % _ for _ in handler.headers.items())))
     else:
@@ -189,6 +192,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         segments = [urllib.parse.unquote(_) for _ in path.split('/') if _]
         mode = segments[0] if segments else "plain"
         name = segments[1] if len(segments) > 1 else "q"
+        self.query = query
         self.query_value = query.get(name, [""])[0]
         self.body_value = body.get(name, [""])[0]
         value = self.body_value or self.query_value                          # POST wins, like PHP's default $_REQUEST

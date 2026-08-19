@@ -10,17 +10,28 @@ shows up in the rendered DOM, script execution actually happened.
 """
 
 import os
+import re
 import shutil
 import subprocess
 import tempfile
 import threading
 import urllib.parse
 
-MARK = "document.title=987654321"
-MARKER = "<title>987654321</title>"                                                    # only a *mutated* title proves execution;
+TITLE_REGEX = r"<title>900(\d{3})</title>"                                  # only a *mutated* title proves execution,
                                                                             # the payload text itself is not enough
 
-BREAKOUTS = tuple(_ % MARK for _ in (
+
+def _mark(index):
+    """Marker statement for payload `index` - quote and space free on purpose.
+
+    It writes to `top` so that the very same payload works unchanged whether it
+    runs in the page itself or inside one of the batch iframes below.
+    """
+
+    return "top.document.title=%d" % (900000 + index)
+
+
+BREAKOUTS = ((
     "<svg onload=%s >",                                                     # straight into HTML text
     "1<svg onload=%s >",                                                    # ...for sinks that require a numeric prefix
     "'><svg onload=%s >",                                                   # out of a single quoted attribute
@@ -40,7 +51,7 @@ BREAKOUTS = tuple(_ % MARK for _ in (
     "1`;%s;//",                                                             # out of a template literal
     "1'-(%s)-'",                                                            # out of a single quoted string, without ";"
     '1"-(%s)-"',                                                            # out of a double quoted string, without ";"
-    "javascript:top.%s",                                                    # whole attribute value is an URL
+    "javascript:%s",                                                        # whole attribute value is an URL
     "${%s}",                                                                # template literal interpolation
 ))
 
@@ -71,7 +82,7 @@ def _profile():
     return _local.profile
 
 
-def render(url, timeout=60, attempts=3):
+def render(url, timeout=60, attempts=4):
     """Returns the DOM of `url` after scripts had their chance to run.
 
     Chromium occasionally refuses to start (profile lock, sandbox hiccup) and
@@ -84,7 +95,7 @@ def render(url, timeout=60, attempts=3):
             process = subprocess.run([_BINARY, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
                                       "--disable-extensions", "--disable-background-networking", "--no-default-browser-check",
                                       "--disable-dev-shm-usage",
-                                      "--user-data-dir=%s" % _profile(), "--virtual-time-budget=2000", "--dump-dom", url],
+                                      "--user-data-dir=%s" % _profile(), "--dump-dom", url],
                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
             dom = process.stdout.decode("utf-8", "replace")
         except subprocess.TimeoutExpired:
@@ -95,11 +106,27 @@ def render(url, timeout=60, attempts=3):
     raise RuntimeError("headless browser produced no DOM for %r after %d attempts" % (url, attempts))
 
 
-DOM_BREAKOUTS = tuple(_ % MARK for _ in (
+DOM_BREAKOUTS = ((
     "<svg/onload=%s>",                                                      # space free: browsers percent encode spaces
     "<img/src=x/onerror=%s>",                                               # for sinks parsing HTML without running <script>
     "1;%s;//",                                                              # for eval()-like sinks, where no markup is needed
 ))
+
+
+def _probe(template, urls):
+    """Loads every URL in its own iframe of one aggregator page.
+
+    Proving that a sink is *not* exploitable means trying the whole breakout
+    set, so probing one payload per browser launch made the negative case cost
+    as much as the entire rest of the suite. The aggregator collapses a set
+    into a single launch; the iframes are same-origin, so a payload that fires
+    can still stamp its index onto the top document's title.
+    """
+
+    parts = urllib.parse.urlsplit(template)
+    query = urllib.parse.urlencode([("u", _) for _ in urls])
+    match = re.search(TITLE_REGEX, render("%s://%s/_batch?%s" % (parts.scheme, parts.netloc, query)))
+    return int(match.group(1)) if match else None
 
 
 def dom_exploitable(template):
@@ -111,19 +138,17 @@ def dom_exploitable(template):
     have to avoid whitespace.
     """
 
-    for payload in DOM_BREAKOUTS:
-        if MARKER in render(template % payload):
-            return payload
-    return None
+    payloads = [_ % _mark(i) for i, _ in enumerate(DOM_BREAKOUTS)]
+    found = _probe(template, [template % _ for _ in payloads])
+    return payloads[found] if found is not None else None
 
 
 def exploitable(template):
     """`template` must contain a single %s placeholder for the payload.
 
-    Returns the first payload that achieved script execution, or None.
+    Returns a payload that achieved script execution, or None.
     """
 
-    for payload in BREAKOUTS:
-        if MARKER in render(template % urllib.parse.quote(payload, safe="")):
-            return payload
-    return None
+    payloads = [_ % _mark(i) for i, _ in enumerate(BREAKOUTS)]
+    found = _probe(template, [template % urllib.parse.quote(_, safe="") for _ in payloads])
+    return payloads[found] if found is not None else None

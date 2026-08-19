@@ -464,7 +464,8 @@ ORACLE_JOBS = max(1, int(os.environ.get("DSXS_ORACLE_JOBS") or min(4, os.cpu_cou
 SCAN_PATH = {"truncated": "/truncated?q=" + "a" * 48}
 
 
-@unittest.skipUnless(browser.available(), "no Chromium/Chrome binary available")
+@unittest.skipUnless(browser.available() and not os.environ.get("DSXS_SKIP_ORACLE"),
+                     "browser oracle disabled (no browser found, or DSXS_SKIP_ORACLE set)")
 class TestBrowserOracle(Base):
     """Cross-checks every verdict against what really happens in a browser."""
 
