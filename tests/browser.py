@@ -12,6 +12,7 @@ shows up in the rendered DOM, script execution actually happened.
 import os
 import re
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -55,10 +56,11 @@ BREAKOUTS = ((
     "${%s}",                                                                # template literal interpolation
 ))
 
-_BINARY = next(filter(None, (shutil.which(_) for _ in ("chromium", "chromium-browser", "google-chrome", "google-chrome-stable"))), None)
+_BINARY = next(filter(None, (shutil.which(_) for _ in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"))), None)
 
-# snap-packaged Chromium may only write inside its own confinement directory
-_PROFILE_ROOT = next((_ for _ in (os.path.expanduser("~/snap/chromium/common"),) if os.path.isdir(_)), tempfile.gettempdir())
+# a snap-packaged browser may only write inside its own confinement directory,
+# and sees a private /tmp - so its profile cannot live in the usual temp dir
+_PROFILE_ROOT = os.path.expanduser("~/snap/chromium/common") if _BINARY and "/snap/" in _BINARY else tempfile.gettempdir()
 
 _local = threading.local()
 
@@ -78,32 +80,65 @@ def version():
 
 def _profile():
     if not getattr(_local, "profile", None):
+        os.makedirs(_PROFILE_ROOT, exist_ok=True)
         _local.profile = tempfile.mkdtemp(prefix="dsxs-oracle-", dir=_PROFILE_ROOT)
     return _local.profile
 
 
-def render(url, timeout=60, attempts=4):
-    """Returns the DOM of `url` after scripts had their chance to run.
+def _kill(process):
+    """Kills the whole browser process tree.
 
-    Chromium occasionally refuses to start (profile lock, sandbox hiccup) and
-    then prints nothing at all; that is retried with a fresh profile so the
-    oracle never reports a launch failure as "not exploitable".
+    The crash handler Chrome spawns inherits our stdout pipe and can outlive
+    the browser itself. Killing only the direct child therefore leaves the pipe
+    open, and any further read on it blocks forever - which is exactly how this
+    used to wedge a CI runner until the job was cancelled.
     """
 
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except OSError:
+        process.kill()
+    for stream in (process.stdout, process.stderr):
+        if stream is not None:
+            stream.close()
+    process.wait()
+
+
+def render(url, timeout=30, attempts=3):
+    """Returns the DOM of `url` after scripts had their chance to run.
+
+    A browser that cannot start (profile lock, sandbox trouble, missing shared
+    memory) prints nothing at all, so that is retried with a clean profile and
+    ultimately reported with whatever it wrote to stderr - never silently, or
+    the oracle would read a launch failure as "not exploitable".
+    """
+
+    reason = "no output"
     for attempt in range(attempts):
+        process = subprocess.Popen([_BINARY, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
+                                    "--disable-extensions", "--disable-background-networking", "--no-default-browser-check",
+                                    "--disable-dev-shm-usage", "--disable-crash-reporter", "--disable-breakpad",
+                                    "--user-data-dir=%s" % _profile(), "--dump-dom", url],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
-            process = subprocess.run([_BINARY, "--headless=new", "--disable-gpu", "--no-sandbox", "--no-first-run",
-                                      "--disable-extensions", "--disable-background-networking", "--no-default-browser-check",
-                                      "--disable-dev-shm-usage",
-                                      "--user-data-dir=%s" % _profile(), "--dump-dom", url],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout)
-            dom = process.stdout.decode("utf-8", "replace")
+            out, err = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            dom = ""
+            _kill(process)
+            out, err = b"", b"produced no DOM within %ds" % timeout
+        dom = out.decode("utf-8", "replace")
         if "</html>" in dom:
             return dom
+        reason = err.decode("utf-8", "replace").strip().splitlines()[-1:] or [reason]
+        reason = reason[0][:300]
         _local.profile = None                                               # forces a clean profile on the next try
-    raise RuntimeError("headless browser produced no DOM for %r after %d attempts" % (url, attempts))
+    raise RuntimeError("headless browser produced no DOM for %r after %d attempts: %s" % (url, attempts, reason))
+
+
+def selftest():
+    """Proves the browser can actually produce DOM in this environment."""
+
+    render("data:text/html,<html><body>ok</body></html>")
+    return version()
 
 
 DOM_BREAKOUTS = ((
